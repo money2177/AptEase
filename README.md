@@ -65,5 +65,4 @@ Run the workflow tests with `.\.venv\Scripts\python.exe -m unittest -v`. The tes
 - [community.py](community.py) contains TinyDB directory storage, vector setup and similarity search.
 - [style.css](style.css) styles the responsive web interface.
 - [test_app.py](test_app.py) exercises the app over HTTP against a temporary database.
-- [GitHub and submission guide](GITHUB.md) covers the first push, teammate access, branches and submission.
 - [Presentation guide](PRESENTATION.md) contains the ER diagram, slide outline, live demo script and query examples.
