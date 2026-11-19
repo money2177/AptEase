@@ -50,6 +50,16 @@ CREATE TABLE IF NOT EXISTS visits (
  visitor TEXT NOT NULL, purpose TEXT NOT NULL, arrived_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
  departed_at TEXT
 );
+CREATE TABLE IF NOT EXISTS visit_requests (
+ id INTEGER PRIMARY KEY,
+ reference TEXT NOT NULL UNIQUE,
+ unit_id INTEGER NOT NULL REFERENCES units(id),
+ visitor TEXT NOT NULL, purpose TEXT NOT NULL, visit_date TEXT NOT NULL,
+ decision TEXT NOT NULL DEFAULT 'Pending' CHECK(decision IN ('Pending','Approved','Declined')),
+ decided_by INTEGER REFERENCES occupancies(id),
+ visit_id INTEGER UNIQUE REFERENCES visits(id)
+);
+CREATE INDEX IF NOT EXISTS visit_requests_unit ON visit_requests(unit_id,visit_date);
 CREATE TABLE IF NOT EXISTS complaints (
  id INTEGER PRIMARY KEY, occupancy_id INTEGER NOT NULL REFERENCES occupancies(id),
  category TEXT NOT NULL CHECK(category IN ('Noise','Cleanliness','Security','Shared spaces','Other')),

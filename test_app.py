@@ -172,6 +172,28 @@ class WorkflowTests(unittest.TestCase):
         with closing(connect(self.database)) as db:
             self.assertIsNotNone(db.execute("SELECT departed_at FROM visits WHERE id=1").fetchone()[0])
 
+    def test_guest_requests_are_approved_by_the_destination_apartment(self):
+        today = date.today()
+        self.post("/visit-request","visit_request",422,unit=1,visitor="Past Guest",purpose="Delivery",
+                  visit_date=today-timedelta(days=1))
+        receipt = self.post("/visit-request","visit_request",unit=1,visitor="Expected Guest",
+                            purpose="Family visit",visit_date=today)
+        self.assertRegex(receipt,r"reference <strong>[0-9A-F]{12}</strong>")
+        self.post("/visit-request","visit_request",unit=2,visitor="Other Guest",purpose="Delivery",visit_date=today)
+        self.login("guard")
+        self.post("/visits","visit_checkin",422,request=1)
+        self.login("resident")
+        page = self.request("/visits")
+        self.assertIn("Expected Guest",page)
+        self.assertNotIn("Other Guest",page)
+        self.post("/visits","visit_decision",422,request=2,decision="Approved")
+        self.post("/visits","visit_decision",request=1,decision="Approved")
+        self.login("guard")
+        self.assertIn("Checked in",self.post("/visits","visit_checkin",request=1))
+        self.post("/visits","visit_checkin",422,request=1)
+        with closing(connect(self.database)) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM visits").fetchone()[0],1)
+
     def test_directory_and_vector_search(self):
         self.login("admin")
         contact = dict(name="Club desk",category="Facilities",channel="Visit Hall A",hours="Saturday")

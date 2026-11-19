@@ -314,12 +314,34 @@ def page_content(db, page, user, token):
         rows = db.execute(f"""SELECT v.id,{UNIT},v.visitor,v.purpose,v.arrived_at,v.departed_at FROM visits v
                            JOIN units u ON u.id=v.unit_id{scope} ORDER BY v.id DESC""", params).fetchall()
         content = table("Gate activity",("ID","Apartment","Visitor","Purpose","Arrival (UTC)","Departure (UTC)"),rows)
+        requests = db.execute(f"""SELECT r.id,r.reference,{UNIT},r.visitor,r.purpose,r.visit_date,
+                  CASE WHEN r.visit_id IS NOT NULL THEN 'Checked in'
+                       WHEN r.visit_date < ? AND r.decision <> 'Declined' THEN 'Expired'
+                       WHEN r.decision='Approved' AND o.end_date IS NOT NULL THEN 'Host moved out'
+                       ELSE r.decision END
+                  FROM visit_requests r JOIN units u ON u.id=r.unit_id
+                  LEFT JOIN occupancies o ON o.id=r.decided_by
+                  {"WHERE r.unit_id=?" if resident else ""}
+                  ORDER BY r.visit_date DESC,r.id DESC""",
+                              (date.today().isoformat(),unit_id) if resident else (date.today().isoformat(),)).fetchall()
+        access = table("Visitor access requests",("Reference","Apartment","Guest","Purpose","Visit date","Status"),
+                       [tuple(row)[1:] for row in requests])
+        if resident:
+            pending = [(r[0],f"{r[3]} · {r[5]} · {r[1]}") for r in requests if r[6]=="Pending"]
+            if pending:
+                access += F("visit_decision","Review visitor access","Save decision",
+                            field("request","Guest request",pending),
+                            field("decision","Decision",[("","Choose a decision"),("Approved","Approve"),("Declined","Decline")]))
         if not resident and unit_options:
-            content += F("arrival","Check in a visitor","Check in",unit,field("visitor","Visitor name"),field("purpose","Purpose"))
+            today = date.today().isoformat()
+            ready = [(r[0],f"{r[3]} · {r[2]} · {r[1]}") for r in requests if r[5]==today and r[6]=="Approved"]
+            if ready:
+                access += F("visit_checkin","Check in an approved guest","Check in",field("request","Approved guest",ready))
+            content += F("arrival","Log a walk-in visitor","Check in",unit,field("visitor","Visitor name"),field("purpose","Purpose"))
             active = [(r[0],f"{r[2]} · {r[1]}") for r in rows if not r[5]]
             if active:
                 content += F("departure","Check out a visitor","Check out",field("visit","Visitor",active))
-        return content
+        return access + content
 
     if page == "parking":
         scope, params = ("", ()) if admin else (" WHERE p.unit_id=?", (unit_id,))
@@ -376,6 +398,7 @@ ACTION_PAGE_ROLE = {
     "ticket": ("tickets", RESIDENT), "status": ("tickets", ADMIN),
     "complaint": ("complaints", RESIDENT), "complaint_response": ("complaints", ADMIN),
     "arrival": ("visits", ADMIN, GUARD), "departure": ("visits", ADMIN, GUARD),
+    "visit_decision": ("visits", RESIDENT), "visit_checkin": ("visits", ADMIN, GUARD),
     "slot": ("parking", ADMIN), "assign": ("parking", ADMIN), "release": ("parking", ADMIN),
     "facility": ("bookings", ADMIN), "booking": ("bookings", RESIDENT), "cancel": ("bookings", ADMIN, RESIDENT),
     "notice": ("notices", ADMIN),
@@ -410,6 +433,24 @@ def register_resident(db, data):
                             (name,username,digest,RESIDENT)).lastrowid
         db.execute("INSERT INTO resident_registrations(user_id,request_id,unit_id,kind) VALUES (?,?,?,?)",
                    (person,secrets.token_hex(16),int(unit),kind))
+
+
+def submit_visit_request(db, data):
+    unit = input_value(data,"unit",10)
+    if not re.fullmatch(r"[0-9]{1,10}",unit):
+        raise ValueError("Choose an apartment.")
+    try:
+        day = date.fromisoformat(input_value(data,"visit_date",10))
+    except ValueError:
+        raise ValueError("Choose a valid visit date.") from None
+    if day < date.today():
+        raise ValueError("Choose today or a future date.")
+    reference = secrets.token_hex(6).upper()
+    with db:
+        db.execute("""INSERT INTO visit_requests(reference,unit_id,visitor,purpose,visit_date)
+                      VALUES (?,?,?,?,?)""",(reference,int(unit),input_value(data,"visitor"),
+                                             input_value(data,"purpose"),day.isoformat()))
+    return reference
 
 
 def apply_directory_action(stores, action, data):
@@ -510,6 +551,21 @@ def apply_action(db, action, data, user):
     elif action == "arrival":
         db.execute("INSERT INTO visits(unit_id,visitor,purpose) VALUES (?,?,?)",
                    (number("unit"),value("visitor"),value("purpose")))
+    elif action == "visit_decision":
+        host = occupancy()
+        change("""UPDATE visit_requests SET decision=?,decided_by=? WHERE id=? AND decision='Pending'
+                  AND visit_date>=? AND unit_id=(SELECT unit_id FROM occupancies WHERE id=?)""",
+               (choice("decision",("Approved","Declined")),host,number("request"),today,host))
+    elif action == "visit_checkin":
+        request = number("request")
+        approved = db.execute("""SELECT r.unit_id,r.visitor,r.purpose FROM visit_requests r
+                                 JOIN occupancies o ON o.id=r.decided_by
+                                 WHERE r.id=? AND r.decision='Approved' AND r.visit_date=?
+                                 AND r.visit_id IS NULL AND o.end_date IS NULL""",(request,today)).fetchone()
+        if not approved:
+            raise ValueError("Only unused requests approved for today can be checked in.")
+        visit = db.execute("INSERT INTO visits(unit_id,visitor,purpose) VALUES (?,?,?)",tuple(approved)).lastrowid
+        change("UPDATE visit_requests SET visit_id=? WHERE id=?",(visit,request))
     elif action == "departure":
         change("UPDATE visits SET departed_at=CURRENT_TIMESTAMP WHERE id=? AND departed_at IS NULL",(number("visit"),))
     elif action == "slot":
@@ -619,6 +675,7 @@ class Portal(BaseHTTPRequestHandler):
         content = form(token,"login","Sign in","Sign in",field("username","Username"),
                        field("password","Password","password"))
         content += '<p>New owner or tenant? <a href="/register">Create a resident account</a></p>'
+        content += '<p>Visiting someone? <a href="/visit-request">Request visitor access</a></p>'
         self.layout("Sign in",content,message=message,error=bool(message) and not submitted,cookie=cookie)
 
     def registration_page(self, token, cookie=None, message=""):
@@ -636,6 +693,23 @@ class Portal(BaseHTTPRequestHandler):
             content = '<p>Ask management to add your apartment before you register.</p>'
         content += '<p><a href="/login">Back to sign in</a></p>'
         self.layout("Resident registration",content,message=message,error=bool(message),
+                    status=422 if message else 200,cookie=cookie)
+
+    def visit_request_page(self, token, cookie=None, message="", reference=""):
+        with closing(connect(self.database)) as db:
+            units = [tuple(row) for row in db.execute(f"SELECT u.id,{UNIT} FROM units u ORDER BY u.block,u.number")]
+        if reference:
+            content = f"""<section class="card"><h2>Request submitted</h2>
+                <p>Share reference <strong>{e(reference)}</strong> with your host. Confirm approval with your host
+                before arriving and give the reference to gate staff.</p></section>"""
+        elif units:
+            content = form(token,"visit_request","Request visitor access","Submit request",field("visitor","Your name"),
+                           field("unit","Apartment",[("","Choose an apartment"),*units]),
+                           field("visit_date","Visit date","date"),field("purpose","Purpose of visit"))
+        else:
+            content = '<p>Visitor requests are available after management adds apartments.</p>'
+        content += '<p><a href="/login">Back to sign in</a></p>'
+        self.layout("Visitor access",content,message=message,error=bool(message),
                     status=422 if message else 200,cookie=cookie)
 
     def show_page(self, db, user, token, path, message="", error=False, query=""):
@@ -659,18 +733,20 @@ class Portal(BaseHTTPRequestHandler):
             return
         _, session = self.session()
         if not session or session[0] is None:
-            if path not in ("","login","register"):
+            if path not in ("","login","register","visit-request"):
                 self.redirect("/login")
             else:
                 token,cookie = (session[1],None) if session else self.new_session()
                 if path == "register":
                     self.registration_page(token,cookie)
+                elif path == "visit-request":
+                    self.visit_request_page(token,cookie)
                 else:
                     submitted = target.query == "registered=1"
                     self.login_page(token,"Request submitted. Sign in after management approves it." if submitted else "",
                                     cookie=cookie,submitted=submitted)
             return
-        if path in ("","login","register"):
+        if path in ("","login","register","visit-request"):
             self.redirect("/dashboard")
             return
         with closing(connect(self.database)) as db:
@@ -708,6 +784,18 @@ class Portal(BaseHTTPRequestHandler):
             return
         with closing(connect(self.database)) as db:
             if session[0] is None:
+                if path == "visit-request" and data.get("action") == "visit_request":
+                    try:
+                        reference = submit_visit_request(db,data)
+                    except ValueError as ex:
+                        self.visit_request_page(session[1],message=str(ex))
+                    except sqlite3.IntegrityError:
+                        self.visit_request_page(session[1],message="The request could not be saved. Choose an available apartment and try again.")
+                    except sqlite3.OperationalError:
+                        self.send(503,b"Visitor requests temporarily unavailable. Try again.","text/plain; charset=utf-8")
+                    else:
+                        self.visit_request_page(session[1],reference=reference)
+                    return
                 if path == "register" and data.get("action") == "register":
                     try:
                         register_resident(db,data)

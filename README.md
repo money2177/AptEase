@@ -21,7 +21,7 @@ The stores run in the local app process. Help search uses a small hand-built voc
 | Maintenance dues | Issue one bill per apartment per month, record full or partial payments, and see the outstanding balance, overdue status and payment ledger. |
 | Service requests | Residents submit and track their requests. Administrators update their status. |
 | Complaints | Residents file categorized complaints and track their status and management response. Administrators review and respond from a dedicated register. |
-| Visitor register | Gate staff and administrators log arrivals and departures. Residents can see visits associated with their current apartment. |
+| Visitor access | Guests request a visit for a specific apartment. Residents approve or decline requests for their apartment, and gate staff check in approved guests. Gate staff can also log walk-ins and departures. |
 | Parking | Administrators create, allocate and release spaces. Residents see assignments for their apartment. |
 | Facilities | Register facilities, view reserved slots, book one-hour slots and cancel future reservations. A database constraint prevents duplicate slots. |
 | Notice board | Administrators publish notices for all roles. |
@@ -56,6 +56,8 @@ On a fresh database, sign in as admin and add the actual apartments under **Unit
 3. Management verifies the occupant and opens **Units & residents → Resident approvals**. Each request has its own **Approve** and **Reject** buttons.
 4. After approval, return to the sign-in page and use your personal credentials.
 
+Guests select **Request visitor access** on the sign-in page, choose an apartment and date, and enter their name and purpose. They share the confirmation reference with their host. The host opens **Visitor register** to approve or decline the request. On the visit date, gate staff match the guest to the approved request and check them in. The local demo runs on localhost, so guests use the device hosting AptEase.
+
 Run the workflow tests with `.\.venv\Scripts\python.exe -m unittest -v`. The tests use temporary databases.
 
 ## Project files
@@ -65,4 +67,3 @@ Run the workflow tests with `.\.venv\Scripts\python.exe -m unittest -v`. The tes
 - [community.py](community.py) contains TinyDB directory storage, vector setup and similarity search.
 - [style.css](style.css) styles the responsive web interface.
 - [test_app.py](test_app.py) exercises the app over HTTP against a temporary database.
-- [Presentation guide](PRESENTATION.md) contains the ER diagram, slide outline, live demo script and query examples.
