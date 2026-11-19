@@ -3,7 +3,7 @@
 DBMS mini-project by **Aditi M Hubli (PES1UG24CS652)** and **Fathima Zahra (PES1UG24CS664)**.
 
 AptEase manages a fictional apartment community. The local web app uses Python, server-rendered HTML, CSS and three storage types. The setup below was tested with Python 3.13 on Windows. Confirm any required database products against your course rubric before submission.
-
+ 
 | Database type | Technology | What it stores |
 |---|---|---|
 | Relational SQL | SQLite | Accounts, units, occupancies, bills, payments, complaints, bookings and other operational records |
