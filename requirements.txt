@@ -1,0 +1,2 @@
+tinydb==4.8.2
+sqlite-vec==0.1.6
