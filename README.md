@@ -67,3 +67,32 @@ Run the workflow tests with `.\.venv\Scripts\python.exe -m unittest -v`. The tes
 - [community.py](community.py) contains TinyDB directory storage, vector setup and similarity search.
 - [style.css](style.css) styles the responsive web interface.
 - [test_app.py](test_app.py) exercises the app over HTTP against a temporary database.
+
+## DBMS viva and PostgreSQL CLI demo
+
+Open [DBMS_DEMO.sql](DBMS_DEMO.sql) in Notepad. It contains the full PostgreSQL DDL, fictional sample data with INSERT, UPDATE and DELETE, five advanced queries, and the trigger, stored function and role commands. Run it in a fresh demo database. The web app continues to use its own SQLite file, so the PostgreSQL demo data is independent of the web app data.
+
+With PostgreSQL running, open PowerShell and run the following. Replace `postgres` if your local database administrator has a different username. If `psql` is unavailable in PowerShell, use the PostgreSQL SQL Shell or add the installation's `bin` directory to PATH.
+
+```powershell
+psql -U postgres -d postgres -c 'CREATE DATABASE aptease_viva;'
+psql -U postgres -d aptease_viva -v ON_ERROR_STOP=1 -f DBMS_DEMO.sql
+psql -U postgres -d aptease_viva
+```
+
+The setup prints five reports using a correlated subquery, a CTE, a recursive CTE, window functions and PostgreSQL full-text search. It then prints `250000` paise from `bill_outstanding(1)`. In the interactive `psql` session, paste these commands individually. The three statements marked as rejected are expected to fail.
+
+```sql
+INSERT INTO aptease_demo.payments(bill_id,amount,reference) VALUES (1,250001,'TOO-MUCH'); -- Trigger rejects it.
+SELECT aptease_demo.bill_outstanding(1); -- Still 250000.
+SET ROLE aptease_demo_billing;
+SELECT current_user, aptease_demo.bill_outstanding(1); -- Allowed.
+SELECT * FROM aptease_demo.visits; -- Permission denied.
+RESET ROLE;
+SET ROLE aptease_demo_gate;
+SELECT current_user, visitor FROM aptease_demo.visits; -- Allowed.
+SELECT * FROM aptease_demo.bill_balances; -- Permission denied.
+RESET ROLE;
+```
+
+For **NoSQL**, add a contact under **Community directory** and open `aptease.sqlite3.directory.json` locally to show the nested document. For **vector search**, enter `neighbors are too loud` in **Help search** and show the complaints article and its similarity score. Use the web app's existing fictional data or add your own demo records.
