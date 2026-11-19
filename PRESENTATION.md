@@ -44,12 +44,12 @@ Notices are community-wide. Each parking slot can be unassigned or assigned to o
 
 ## Live demo
 
-1. Sign in as `admin`. Show the seeded dashboard, four apartments and one active occupancy. Add a unit and register a fictional tenant there. Show the occupancy history.
-2. Open **Maintenance dues**. Record ₹1,000 against the seeded ₹3,500 bill for A-101 using reference `DEMO-PART-001`. Show its ₹2,500 balance. Try ₹2,501 with another reference and show the trigger rejection.
-3. Sign out and sign in as `resident`. Verify that the balance is visible. Submit a service request. Reserve a facility for a future date and try the same facility, date and time again to show conflict prevention.
+1. Sign in as `admin`. Add A-101 in **Units & residents**, add a facility and create a parking slot. Sign out and select **Create a resident account**. Choose Tenant and A-101, then create an account with fictional details. Sign back in as admin, approve the request, and show the occupancy history.
+2. Open **Maintenance dues**. Issue a ₹3,500 bill for A-101 and record ₹1,000 using reference `DEMO-PART-001`. Show its ₹2,500 balance. Try ₹2,501 with another reference and show the trigger rejection.
+3. Sign out and sign in with the approved resident account. Verify that the balance is visible. Submit a service request. Reserve a facility for a future date and try the same facility, date and time again to show conflict prevention.
 4. Sign in as `guard`. Check a fictional visitor into A-101 and show the dashboard count. Check the visitor out and show their departure time.
 5. Return to `admin`. Set the service request to **In progress**, allocate a parking slot, and publish a notice. If time permits, return as `resident` and show the updates.
-6. As `resident`, open **Complaints** and file a noise complaint. As `admin`, write a management response and set its status to **In progress**. Return as `resident` to show the response and status.
+6. As the resident, open **Complaints** and file a noise complaint. As `admin`, write a management response and set its status to **In progress**. Return as the resident to show the response and status.
 7. As `admin`, add a contact in **Community directory** and show it as a resident. In **Help search**, search for `neighbors are too loud` and point out the returned complaints article and similarity score.
 
 ## SQL examples

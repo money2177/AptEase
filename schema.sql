@@ -13,6 +13,13 @@ CREATE TABLE IF NOT EXISTS occupancies (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS one_current_home ON occupancies(user_id) WHERE end_date IS NULL;
 CREATE INDEX IF NOT EXISTS occupancy_unit ON occupancies(unit_id,end_date);
+CREATE TABLE IF NOT EXISTS resident_registrations (
+ user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+ request_id TEXT NOT NULL UNIQUE,
+ unit_id INTEGER NOT NULL REFERENCES units(id),
+ kind TEXT NOT NULL CHECK(kind IN ('Owner','Tenant')),
+ requested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS bills (
  id INTEGER PRIMARY KEY, unit_id INTEGER NOT NULL REFERENCES units(id),
  period TEXT NOT NULL, amount INTEGER NOT NULL CHECK(amount > 0), due_date TEXT NOT NULL,

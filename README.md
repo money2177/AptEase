@@ -16,8 +16,8 @@ The stores run in the local app process. Help search uses a small hand-built voc
 
 | Module | Workflow |
 |---|---|
-| Role-based access | Administrator, resident and gate staff sign in. Each role gets its own navigation and server-side permissions. |
-| Apartments and residents | Add apartments, register owners or tenants, record move-ins and move-outs, and review occupancy history. |
+| Role-based access | Administrators and gate staff use provisioned accounts. Residents create individual accounts and sign in after management approval. |
+| Apartments and residents | Add apartments, approve Owner or Tenant registration requests, record move-ins and move-outs, and review occupancy history. |
 | Maintenance dues | Issue one bill per apartment per month, record full or partial payments, and see the outstanding balance, overdue status and payment ledger. |
 | Service requests | Residents submit and track their requests. Administrators update their status. |
 | Complaints | Residents file categorized complaints and track their status and management response. Administrators review and respond from a dedicated register. |
@@ -44,11 +44,17 @@ python -m venv .venv
 
 Open [AptEase](http://127.0.0.1:8000). First launch creates `aptease.sqlite3`, `aptease.sqlite3.directory.json` and `aptease.sqlite3.vectors.sqlite3`. Existing `cedar.sqlite3` data is reused if the new SQL file is absent, with the companion files named after the database in use. Stop with Ctrl+C. Add `--port 8001` to the launch command if the port is occupied. Add `--db rehearsal.sqlite3` to use a fresh set of three stores for rehearsal. Run one AptEase process per set of database files.
 
-| Role | Username | Demo password |
+| Staff role | Username | Initial local password |
 |---|---|---|
 | Administrator | `admin` | `AdminDemo123` |
-| Resident | `resident` | `ResidentDemo123` |
 | Gate staff | `guard` | `GuardDemo123` |
+
+On a fresh database, sign in as admin and add the actual apartments under **Units & residents**. The SQL database starts with the two staff accounts and empty operational records. On an existing database, startup removes the old demo resident and sample service request. Any additional records linked to that account are retained under an archived resident.
+
+1. From the sign-in screen, select **Create a resident account**.
+2. Choose **Owner** or **Tenant** and your apartment, then choose a username and a password of at least eight characters.
+3. Management verifies the occupant and opens **Units & residents → Resident approvals**. Each request has its own **Approve** and **Reject** buttons.
+4. After approval, return to the sign-in page and use your personal credentials.
 
 Run the workflow tests with `.\.venv\Scripts\python.exe -m unittest -v`. The tests use temporary databases.
 

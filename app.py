@@ -22,6 +22,8 @@ ROOT = Path(__file__).resolve().parent
 ADMIN, RESIDENT, GUARD = "admin", "resident", "guard"
 COMPLAINT_CATEGORIES = ("Noise", "Cleanliness", "Security", "Shared spaces", "Other")
 REQUEST_STATUSES = ("Open", "In progress", "Resolved")
+OCCUPANCY_TYPES = ("Owner", "Tenant")
+MIN_RESIDENT_PASSWORD = 8
 PAGES = {
     "dashboard": ("Overview", (ADMIN, RESIDENT, GUARD)),
     "units": ("Units & residents", (ADMIN,)),
@@ -54,27 +56,35 @@ def password_hash(password, salt=None):
 def initialize(path):
     with closing(connect(path)) as db, db:
         db.executescript((ROOT / "schema.sql").read_text(encoding="utf-8"))
+        demo = db.execute("""SELECT id FROM users
+                           WHERE username='resident' AND name='Ananya Rao' AND role='resident'""").fetchone()
+        if demo:
+            remove_demo_resident(db,demo["id"])
         if db.execute("SELECT 1 FROM users LIMIT 1").fetchone():
             return
         db.executemany("INSERT INTO users(name,username,password_hash,role) VALUES (?,?,?,?)", [
             ("Community Manager", "admin", password_hash("AdminDemo123"), ADMIN),
-            ("Ananya Rao", "resident", password_hash("ResidentDemo123"), RESIDENT),
             ("Front Gate", "guard", password_hash("GuardDemo123"), GUARD),
         ])
-        db.executemany("INSERT INTO units(block,number,bedrooms) VALUES (?,?,?)",
-                       [("A","101",2), ("A","102",3), ("B","201",2), ("B","202",3)])
-        db.execute("INSERT INTO occupancies(unit_id,user_id,kind,start_date) VALUES (1,2,'Owner',?)",
-                   (date.today().isoformat(),))
-        db.execute("INSERT INTO bills(unit_id,period,amount,due_date) VALUES (1,?,350000,?)",
-                   (date.today().strftime("%Y-%m"), date.today().replace(day=28).isoformat()))
-        db.execute("INSERT INTO tickets(occupancy_id,subject,description) VALUES (1,?,?)",
-                   ("Corridor light", "The light outside A-101 needs replacement."))
-        db.executemany("INSERT INTO parking(slot,unit_id,vehicle) VALUES (?,?,?)",
-                       [("P-01",1,"DEMO-101"), ("P-02",None,None), ("P-03",None,None)])
-        db.executemany("INSERT INTO facilities(name) VALUES (?)",
-                       [("Multipurpose Hall",), ("Badminton Court",)])
-        db.execute("INSERT INTO notices(title,body) VALUES (?,?)",
-                   ("Welcome to AptEase", "Use the portal to book facilities, request maintenance or file a complaint."))
+
+
+def remove_demo_resident(db, user_id):
+    db.execute("""DELETE FROM tickets WHERE subject='Corridor light'
+                  AND description='The light outside A-101 needs replacement.'
+                  AND occupancy_id IN (SELECT id FROM occupancies WHERE user_id=?)""",(user_id,))
+    db.execute("""DELETE FROM occupancies WHERE user_id=?
+                  AND NOT EXISTS (SELECT 1 FROM tickets WHERE occupancy_id=occupancies.id)
+                  AND NOT EXISTS (SELECT 1 FROM complaints WHERE occupancy_id=occupancies.id)
+                  AND NOT EXISTS (SELECT 1 FROM bookings WHERE occupancy_id=occupancies.id)""",(user_id,))
+    if db.execute("SELECT 1 FROM occupancies WHERE user_id=?",(user_id,)).fetchone():
+        # Keep foreign keys valid if someone used the old account to create additional records.
+        db.execute("""UPDATE occupancies SET end_date=max(start_date,?) WHERE user_id=? AND end_date IS NULL""",
+                   (date.today().isoformat(),user_id))
+        db.execute("UPDATE users SET name=?,username=?,password_hash=? WHERE id=?",
+                   ("Archived resident","archived-"+secrets.token_hex(16),
+                    password_hash(secrets.token_urlsafe(48)),user_id))
+    else:
+        db.execute("DELETE FROM users WHERE id=?",(user_id,))
 
 
 def money(paise):
@@ -111,6 +121,20 @@ def table(title, headers, rows):
         body = f'<tr><td colspan="{len(headers)}">No records yet.</td></tr>'
     return (f'<section class="card"><h2>{e(title)}</h2><div class="scroll"><table>'
             f'<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div></section>')
+
+
+def registration_queue(requests, token):
+    rows = "".join(f"""<li><div><strong>{e(name)}</strong>
+        <p>{e(username)} · {e(apartment)} · {e(kind)}</p></div>
+        <form method="post" class="approval-actions">
+          <input type="hidden" name="token" value="{e(token)}">
+          <input type="hidden" name="action" value="review_registration">
+          <input type="hidden" name="request" value="{e(request)}">
+          <button name="decision" value="approve" aria-label="Approve {e(username)}">Approve</button>
+          <button class="secondary" name="decision" value="reject" aria-label="Reject {e(username)}">Reject</button>
+        </form></li>""" for request,name,username,apartment,kind in requests)
+    content = f'<ul class="approval-list">{rows}</ul>' if rows else '<p>No pending requests.</p>'
+    return f'<section class="card"><h2>Resident approvals</h2>{content}</section>'
 
 
 def directory_content(stores, user, token):
@@ -184,8 +208,22 @@ def page_content(db, page, user, token):
             metrics.append(("My active complaints", count))
         stats = "".join(f'<div class="metric"><span>{e(label)}</span><strong>{e(value)}</strong></div>'
                         for label, value in metrics)
-        return f'<div class="metrics">{stats}</div>' + table("Latest notices", ("Title","Message"), db.execute(
-            "SELECT title,body FROM notices ORDER BY id DESC LIMIT 3"))
+        if admin:
+            percent = round(occupied / units * 100) if units else 0
+            highlight = f"""<section class="hero"><div><h2>Apartment occupancy</h2>
+                <p>{occupied} of {units} apartments currently occupied</p>
+                <meter min="0" max="100" value="{percent}" aria-label="Apartment occupancy percentage">{percent}%</meter>
+                <a href="/units">Manage apartments</a></div><strong>{percent}%</strong></section>"""
+        else:
+            link, label = ("/tickets","View service requests") if resident else ("/visits","Open visitor register")
+            highlight = f"""<section class="hero"><div><h2>Welcome, {e(user['name'])}</h2>
+                <a href="{link}">{label}</a></div></section>"""
+        notices = db.execute("SELECT title,body FROM notices ORDER BY id DESC LIMIT 3").fetchall()
+        announcements = "".join(f'<li><strong>{e(row[0])}</strong><p>{e(row[1])}</p></li>' for row in notices)
+        notice_content = f'<ul class="notice-list">{announcements}</ul>' if notices else '<p>No notices have been published.</p>'
+        return (f'<div class="metrics">{stats}</div><div class="dashboard-panels">{highlight}'
+                f'<section class="card notice-panel"><div class="section-heading"><h2>Latest notices</h2>'
+                f'<a href="/notices">View all</a></div>{notice_content}</section></div>')
 
     if page == "units":
         rows = db.execute(f"""SELECT {UNIT},u.bedrooms,COUNT(o.id) FROM units u
@@ -196,21 +234,24 @@ def page_content(db, page, user, token):
            ORDER BY o.id DESC""")
         residents = list(map(tuple, db.execute("""SELECT p.id,p.name || ' (' || p.username || ')' FROM users p
           WHERE role='resident' AND NOT EXISTS
-          (SELECT 1 FROM occupancies o WHERE o.user_id=p.id AND o.end_date IS NULL) ORDER BY p.name""")))
+          (SELECT 1 FROM occupancies o WHERE o.user_id=p.id AND o.end_date IS NULL)
+          AND NOT EXISTS (SELECT 1 FROM resident_registrations r WHERE r.user_id=p.id)
+          ORDER BY p.name""")))
         active = list(map(tuple, db.execute("""SELECT o.id,p.name || ' (' || p.username || ')'
           FROM occupancies o JOIN users p ON p.id=o.user_id WHERE o.end_date IS NULL ORDER BY p.name""")))
-        kind = field("kind","Occupancy type",[("Owner","Owner"),("Tenant","Tenant")])
+        pending = db.execute(f"""SELECT r.request_id,p.name,p.username,{UNIT},r.kind
+                              FROM resident_registrations r JOIN users p ON p.id=r.user_id
+                              JOIN units u ON u.id=r.unit_id ORDER BY r.requested_at,p.id""").fetchall()
+        kind = field("kind","Occupancy type",[(x,x) for x in OCCUPANCY_TYPES])
         forms = F("unit","Add an apartment","Add apartment",field("block","Block"),
                   field("number","Apartment number"),field("bedrooms","Bedrooms","number"))
-        if unit_options:
-            forms += F("register","Register and move in","Register resident",unit,kind,field("name","Full name"),
-                       field("username","Username"),field("password","Initial password (10+ characters)","password"))
-            if residents:
-                forms += F("movein","Move in an existing resident","Move in",unit,kind,
-                           field("user","Resident account",residents))
+        if unit_options and residents:
+            forms += F("movein","Move in an existing resident","Move in",unit,kind,
+                       field("user","Resident account",residents))
         if active:
             forms += F("moveout","End an occupancy","Move out",field("occupancy","Resident",active))
-        return (table("Apartment inventory",("Apartment","Bedrooms","Current residents"),rows)
+        return (registration_queue(pending,token)
+                + table("Apartment inventory",("Apartment","Bedrooms","Current residents"),rows)
                 + table("Occupancy history",("ID","Name","Username","Apartment","Type","Start date","End date"),history) + forms)
 
     if page == "billing":
@@ -329,7 +370,8 @@ def page_content(db, page, user, token):
 
 
 ACTION_PAGE_ROLE = {
-    "unit": ("units", ADMIN), "register": ("units", ADMIN), "movein": ("units", ADMIN), "moveout": ("units", ADMIN),
+    "unit": ("units", ADMIN), "review_registration": ("units", ADMIN),
+    "movein": ("units", ADMIN), "moveout": ("units", ADMIN),
     "bill": ("billing", ADMIN), "payment": ("billing", ADMIN),
     "ticket": ("tickets", RESIDENT), "status": ("tickets", ADMIN),
     "complaint": ("complaints", RESIDENT), "complaint_response": ("complaints", ADMIN),
@@ -346,6 +388,28 @@ def input_value(data, key, limit=150, required=True):
     if (required and not result) or len(result) > limit:
         raise ValueError(f"Enter a valid {key} (up to {limit} characters).")
     return result
+
+
+def register_resident(db, data):
+    name = input_value(data,"name")
+    username = input_value(data,"username",40).lower()
+    password = input_value(data,"password")
+    if len(password) < MIN_RESIDENT_PASSWORD:
+        raise ValueError(f"Choose a password with at least {MIN_RESIDENT_PASSWORD} characters.")
+    if not re.fullmatch(r"[a-z0-9._-]{3,40}",username):
+        raise ValueError("Use a username of 3–40 letters, digits, dots, underscores or hyphens.")
+    if password != input_value(data,"confirm_password"):
+        raise ValueError("Passwords do not match.")
+    kind = input_value(data,"kind")
+    unit = input_value(data,"unit",10)
+    if kind not in OCCUPANCY_TYPES or not re.fullmatch(r"[0-9]{1,10}",unit):
+        raise ValueError("Choose an apartment and select Owner or Tenant.")
+    digest = password_hash(password)
+    with db:
+        person = db.execute("INSERT INTO users(name,username,password_hash,role) VALUES (?,?,?,?)",
+                            (name,username,digest,RESIDENT)).lastrowid
+        db.execute("INSERT INTO resident_registrations(user_id,request_id,unit_id,kind) VALUES (?,?,?,?)",
+                   (person,secrets.token_hex(16),int(unit),kind))
 
 
 def apply_directory_action(stores, action, data):
@@ -405,20 +469,21 @@ def apply_action(db, action, data, user):
     if action == "unit":
         db.execute("INSERT INTO units(block,number,bedrooms) VALUES (?,?,?)",
                    (value("block",20).upper(),value("number",20).upper(),number("bedrooms",1,8)))
-    elif action in ("register","movein"):
-        target = number("unit")
-        kind = choice("kind",("Owner","Tenant"))
-        if action == "register":
-            password = value("password")
-            username = value("username",40).lower()
-            if len(password) < 10 or not re.fullmatch(r"[a-z0-9._-]{3,40}",username):
-                raise ValueError("Use a password of 10+ characters and a username of 3–40 letters, digits, dots, underscores or hyphens.")
-            person = db.execute("INSERT INTO users(name,username,password_hash,role) VALUES (?,?,?,?)",
-                                (value("name"),username,password_hash(password),RESIDENT)).lastrowid
+    elif action == "review_registration":
+        request = value("request",32)
+        decision = choice("decision",("approve","reject"))
+        if decision == "approve":
+            change("""INSERT INTO occupancies(unit_id,user_id,kind,start_date)
+                      SELECT unit_id,user_id,kind,? FROM resident_registrations WHERE request_id=?""",(today,request))
+            change("DELETE FROM resident_registrations WHERE request_id=?",(request,))
         else:
-            person = number("user")
+            change("""DELETE FROM users WHERE role='resident' AND id=
+                      (SELECT user_id FROM resident_registrations WHERE request_id=?)""",(request,))
+    elif action == "movein":
         change("""INSERT INTO occupancies(unit_id,user_id,kind,start_date)
-                  SELECT ?,id,?,? FROM users WHERE id=? AND role='resident'""", (target,kind,today,person))
+                  SELECT ?,id,?,? FROM users WHERE id=? AND role='resident' AND NOT EXISTS
+                  (SELECT 1 FROM resident_registrations WHERE user_id=users.id)""",
+               (number("unit"),choice("kind",OCCUPANCY_TYPES),today,number("user")))
     elif action == "moveout":
         change("UPDATE occupancies SET end_date=? WHERE id=? AND end_date IS NULL",(today,number("occupancy")))
     elif action == "bill":
@@ -519,13 +584,19 @@ class Portal(BaseHTTPRequestHandler):
         if user:
             links = "".join(f'<a href="/{key}" {"aria-current=page" if page==key else ""}>{e(label)}</a>'
                             for key,(label,roles) in PAGES.items() if user["role"] in roles)
-            frame = f"""<aside class="sidebar"><div class="brand"><b>AptEase</b><span>Apartment portal</span></div>
-              <nav aria-label="Main navigation">{links}</nav><div class="account"><b>{e(user["name"])}</b>
-              <span>{e(user["role"].title())}</span><form method="post" action="/logout">
-              <input type="hidden" name="token" value="{e(token)}"><button class="quiet">Sign out</button></form></div></aside>
-              <main><header><h1>{e(title)}</h1></header>{note}{content}</main>"""
+            role = {ADMIN:"Administrator",RESIDENT:"Resident",GUARD:"Gate staff"}[user["role"]]
+            initials = "".join(part[0] for part in user["name"].split()[:2]).upper()
+            frame = f"""<div class="workspace"><aside class="sidebar">
+              <a class="brand" href="/dashboard"><span class="brand-mark" aria-hidden="true"></span>AptEase</a>
+              <nav aria-label="Main navigation">{links}</nav>
+              <form method="post" action="/logout" class="signout">
+              <input type="hidden" name="token" value="{e(token)}"><button class="quiet">Sign out</button></form></aside>
+              <main><header class="topbar"><h1>{e(title)}</h1>
+              <div class="account"><span class="avatar" aria-hidden="true">{e(initials)}</span>
+              <div><b>{e(user["name"])}</b><span>{role}</span></div></div></header>{note}{content}</main></div>"""
         else:
-            frame = f'<main class="signin"><header><span>APARTMENT MANAGEMENT SYSTEM</span><h1>AptEase</h1></header>{note}{content}</main>'
+            frame = f"""<main class="signin"><header><div class="brand"><span class="brand-mark" aria-hidden="true"></span>
+                <h1>AptEase</h1></div><p>Apartment management</p></header>{note}{content}</main>"""
         doc = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
             <meta name="viewport" content="width=device-width,initial-scale=1">
             <title>{e(title)} · AptEase</title><link rel="stylesheet" href="/style.css"></head>
@@ -544,9 +615,28 @@ class Portal(BaseHTTPRequestHandler):
             self.sessions[sid] = (user_id,token,now+self.lifetime)
         return token, f"cedar={sid}; Path=/; HttpOnly; SameSite=Strict; Max-Age={self.lifetime}"
 
-    def login_page(self, token, message="", cookie=None):
-        self.layout("Sign in",form(token,"login","Sign in","Sign in",field("username","Username"),
-                    field("password","Password","password")), message=message,error=bool(message),cookie=cookie)
+    def login_page(self, token, message="", cookie=None, submitted=False):
+        content = form(token,"login","Sign in","Sign in",field("username","Username"),
+                       field("password","Password","password"))
+        content += '<p>New owner or tenant? <a href="/register">Create a resident account</a></p>'
+        self.layout("Sign in",content,message=message,error=bool(message) and not submitted,cookie=cookie)
+
+    def registration_page(self, token, cookie=None, message=""):
+        with closing(connect(self.database)) as db:
+            units = [tuple(row) for row in db.execute(f"SELECT u.id,{UNIT} FROM units u ORDER BY u.block,u.number")]
+        if units:
+            content = '<p>Choose your occupancy type and apartment. Management must approve your request before you can sign in.</p>'
+            content += form(token,"register","Create a resident account","Request access",
+                            field("kind","I am",[("","Choose Owner or Tenant"),*((x,x) for x in OCCUPANCY_TYPES)]),
+                            field("unit","Apartment",[("","Choose your apartment"),*units]),
+                            field("name","Full name"),field("username","Choose a username"),
+                            field("password",f"Choose a password ({MIN_RESIDENT_PASSWORD}+ characters)","password"),
+                            field("confirm_password","Confirm password","password"))
+        else:
+            content = '<p>Ask management to add your apartment before you register.</p>'
+        content += '<p><a href="/login">Back to sign in</a></p>'
+        self.layout("Resident registration",content,message=message,error=bool(message),
+                    status=422 if message else 200,cookie=cookie)
 
     def show_page(self, db, user, token, path, message="", error=False, query=""):
         try:
@@ -569,15 +659,18 @@ class Portal(BaseHTTPRequestHandler):
             return
         _, session = self.session()
         if not session or session[0] is None:
-            if path not in ("","login"):
+            if path not in ("","login","register"):
                 self.redirect("/login")
-            elif session:
-                self.login_page(session[1])
             else:
-                token,cookie = self.new_session()
-                self.login_page(token,cookie=cookie)
+                token,cookie = (session[1],None) if session else self.new_session()
+                if path == "register":
+                    self.registration_page(token,cookie)
+                else:
+                    submitted = target.query == "registered=1"
+                    self.login_page(token,"Request submitted. Sign in after management approves it." if submitted else "",
+                                    cookie=cookie,submitted=submitted)
             return
-        if path in ("","login"):
+        if path in ("","login","register"):
             self.redirect("/dashboard")
             return
         with closing(connect(self.database)) as db:
@@ -615,6 +708,20 @@ class Portal(BaseHTTPRequestHandler):
             return
         with closing(connect(self.database)) as db:
             if session[0] is None:
+                if path == "register" and data.get("action") == "register":
+                    try:
+                        register_resident(db,data)
+                    except ValueError as ex:
+                        self.registration_page(session[1],message=str(ex))
+                    except sqlite3.IntegrityError as ex:
+                        message = ("That username is already in use." if "users.username" in str(ex)
+                                   else "Choose an available apartment.")
+                        self.registration_page(session[1],message=message)
+                    except sqlite3.OperationalError:
+                        self.send(503,b"Registration temporarily unavailable. Try again.","text/plain; charset=utf-8")
+                    else:
+                        self.redirect("/login?registered=1")
+                    return
                 if path not in ("","login"):
                     self.redirect("/login")
                     return
@@ -623,6 +730,11 @@ class Portal(BaseHTTPRequestHandler):
                 account = db.execute("SELECT * FROM users WHERE username=?",(username,)).fetchone()
                 stored = account["password_hash"] if account else "0"*32 + ":" + "0"*128
                 if len(password) <= 150 and compare_digest(password_hash(password,stored.split(":")[0]),stored):
+                    pending = db.execute("SELECT 1 FROM resident_registrations WHERE user_id=?",
+                                         (account["id"],)).fetchone()
+                    if pending:
+                        self.login_page(session[1],"Your resident registration is awaiting management approval.")
+                        return
                     with self.session_lock:
                         self.sessions.pop(sid,None)
                     _, cookie = self.new_session(account["id"])

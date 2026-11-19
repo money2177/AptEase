@@ -12,7 +12,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import HTTPCookieProcessor, build_opener
 
-from app import Portal, connect, initialize
+from app import Portal, connect, initialize, password_hash
 from community import CommunityStores
 
 
@@ -22,6 +22,18 @@ class WorkflowTests(unittest.TestCase):
         self.addCleanup(scratch.cleanup)
         self.database = Path(scratch.name) / "test.sqlite3"
         initialize(self.database)
+        with closing(connect(self.database)) as db, db:
+            db.execute("INSERT INTO users(name,username,password_hash,role) VALUES (?,?,?,'resident')",
+                       ("Test Resident","resident",password_hash("ResidentDemo123")))
+            db.executemany("INSERT INTO units(block,number,bedrooms) VALUES (?,?,?)",
+                           [("A","101",2),("A","102",3),("B","201",2),("B","202",3)])
+            db.execute("INSERT INTO occupancies(unit_id,user_id,kind,start_date) VALUES (1,3,'Owner',?)",
+                       (date.today().isoformat(),))
+            db.execute("INSERT INTO bills(unit_id,period,amount,due_date) VALUES (1,?,350000,?)",
+                       (date.today().strftime("%Y-%m"),date.today().replace(day=28).isoformat()))
+            db.execute("INSERT INTO tickets(occupancy_id,subject,description) VALUES (1,'Light','Broken light')")
+            db.executemany("INSERT INTO parking(slot) VALUES (?)",[("P-01",),("P-02",),("P-03",)])
+            db.execute("INSERT INTO facilities(name) VALUES ('Multipurpose Hall')")
         stores = CommunityStores(self.database).__enter__()
         self.addCleanup(stores.close)
         server = ThreadingHTTPServer(("127.0.0.1", 0), partial(Portal, database=self.database, stores=stores))
@@ -56,6 +68,17 @@ class WorkflowTests(unittest.TestCase):
         page = self.post("/login", "login", username=role, password=role.title()+"Demo123")
         self.assertIn("Overview", page)
 
+    def resident_request(self, username, password, unit, status=200):
+        self.client = build_opener(HTTPCookieProcessor(CookieJar()))
+        return self.post("/register","register",status,unit=unit,kind="Tenant",name=username,
+                         username=username,password=password,confirm_password=password)
+
+    def review_request(self, username, decision, status=200):
+        with closing(connect(self.database)) as db:
+            request = db.execute("""SELECT r.request_id FROM resident_registrations r
+                                    JOIN users u ON u.id=r.user_id WHERE u.username=?""",(username,)).fetchone()[0]
+        return self.post("/units","review_registration",status,request=request,decision=decision)
+
     def test_billing_trigger_ledger_and_resident_scope(self):
         self.login("admin")
         self.assertIn("₹2,500.00", self.post("/billing","payment",bill=1,amount=1000,reference="PART-001"))
@@ -74,9 +97,19 @@ class WorkflowTests(unittest.TestCase):
     def test_occupancy_registration_is_atomic(self):
         self.login("admin")
         self.post("/units","unit",block="C",number="304",bedrooms=2)
-        resident = dict(kind="Tenant", name="Demo Tenant", username="new.tenant", password="Temporary123")
-        self.post("/units","register",422,unit=999,**resident)
-        self.assertIn("Demo Tenant", self.post("/units","register",unit=5,**resident))
+        self.resident_request("new.tenant","Temporary123",999,422)
+        self.assertIn("at least 8 characters",self.resident_request("new.tenant","short77",5,422))
+        self.assertIn("Request submitted",self.resident_request("new.tenant","Eight123",5))
+        waiting = self.post("/login","login",username="new.tenant",password="Eight123")
+        self.assertIn("awaiting management approval",waiting)
+        self.request("/billing")
+        self.login("admin")
+        self.assertIn('name="decision" value="approve"',self.request("/units"))
+        self.post("/units","movein",422,unit=5,kind="Tenant",user=4)
+        self.assertIn("new.tenant",self.review_request("new.tenant","approve"))
+        self.client = build_opener(HTTPCookieProcessor(CookieJar()))
+        self.assertIn("Overview",self.post("/login","login",username="new.tenant",password="Eight123"))
+        self.login("admin")
         self.post("/units","moveout",occupancy=2)
         self.post("/units","movein",unit=3,kind="Tenant",user=4)
         self.post("/units","movein",422,unit=4,kind="Tenant",user=4)
@@ -109,9 +142,9 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn("TEST-1", self.request("/parking"))
 
     def test_complaint_workflow_and_privacy(self):
+        self.resident_request("second","SecondDemo123",1)
         self.login("admin")
-        self.post("/units","register",unit=1,kind="Tenant",name="Second Resident",
-                  username="second",password="SecondDemo123")
+        self.review_request("second","approve")
         self.login("resident")
         self.post("/complaints","complaint",422,category="Invalid",subject="Noise",description="Loud music")
         page = self.post("/complaints","complaint",category="Noise",subject="Late music",description="Loud music")
@@ -163,6 +196,33 @@ class WorkflowTests(unittest.TestCase):
             entry = next(row for row in stores.directory() if row["name"] == "Club desk")
             self.assertEqual(entry["contact"],{"channel":"Visit Hall A"})
             self.assertEqual(stores.search_help("broken")[0][0],"Request a repair")
+
+    def test_new_database_has_only_staff_and_legacy_demo_is_removed(self):
+        database = self.database.with_name("clean.sqlite3")
+        initialize(database)
+        with closing(connect(database)) as db, db:
+            self.assertEqual([r[0] for r in db.execute("SELECT role FROM users ORDER BY id")],["admin","guard"])
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM units").fetchone()[0],0)
+            old = password_hash("ResidentDemo123")
+            db.execute("INSERT INTO users(name,username,password_hash,role) VALUES (?,?,?,'resident')",
+                       ("Ananya Rao","resident",old))
+            db.execute("INSERT INTO units(block,number,bedrooms) VALUES ('A','101',2)")
+            db.execute("INSERT INTO occupancies(unit_id,user_id,kind,start_date) VALUES (1,3,'Owner',?)",
+                       (date.today().isoformat(),))
+            db.execute("""INSERT INTO tickets(occupancy_id,subject,description)
+                          VALUES (1,'Corridor light','The light outside A-101 needs replacement.')""")
+        initialize(database)
+        with closing(connect(database)) as db:
+            self.assertIsNone(db.execute("SELECT 1 FROM users WHERE username='resident'").fetchone())
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM occupancies").fetchone()[0],0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM tickets").fetchone()[0],0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM units").fetchone()[0],1)
+
+    def test_rejected_registration_releases_username(self):
+        self.resident_request("new.tenant","Temporary123",1)
+        self.login("admin")
+        self.review_request("new.tenant","reject")
+        self.assertIn("Request submitted",self.resident_request("new.tenant","Temporary123",2))
 
 
 if __name__ == "__main__":
