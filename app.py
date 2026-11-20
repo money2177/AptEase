@@ -871,13 +871,19 @@ if __name__ == "__main__":
     current_database = ROOT / "aptease.sqlite3"
     default_database = legacy_database if legacy_database.exists() and not current_database.exists() else current_database
     parser.add_argument("--db",type=Path,default=default_database)
+    parser.add_argument("--host", default="127.0.0.1", help="IPv4 address to listen on")
     parser.add_argument("--port",type=int,default=8000)
     args = parser.parse_args()
     initialize(args.db)
     with CommunityStores(args.db) as stores, ThreadingHTTPServer(
-        ("127.0.0.1",args.port),partial(Portal,database=args.db,stores=stores)
+        (args.host,args.port),partial(Portal,database=args.db,stores=stores)
     ) as server:
-        print(f"AptEase is running at http://127.0.0.1:{server.server_port}",flush=True)
+        if args.host == "0.0.0.0":
+            print(f"AptEase is listening on all IPv4 interfaces on port {server.server_port}. "
+                  f"Open http://127.0.0.1:{server.server_port} here or use this computer's LAN IPv4 address on another device.",
+                  flush=True)
+        else:
+            print(f"AptEase is running at http://{args.host}:{server.server_port}",flush=True)
         try:
             server.serve_forever()
         except KeyboardInterrupt:

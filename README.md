@@ -60,6 +60,23 @@ Guests select **Request visitor access** on the sign-in page, choose an apartmen
 
 Run the workflow tests with `.\.venv\Scripts\python.exe -m unittest -v`. The tests use temporary databases.
 
+## Share one database over Wi-Fi
+
+On a trusted local network, run AptEase on the laptop that already has the data:
+
+```powershell
+.\.venv\Scripts\python.exe app.py --host 0.0.0.0
+```
+
+Use the same `--db` argument as before if you chose a custom database. Find the
+host's Wi-Fi IPv4 address with `ipconfig`. Open `http://HOST_IP:8000` in the
+browser on the second laptop and sign in with an existing account. The host
+can use `http://127.0.0.1:8000` to sign in as a different user. If Windows asks
+for firewall access, allow it on Private networks.
+
+Keep AptEase running on the host while both laptops use it. Both browsers save
+changes to the host's database. Use this HTTP demo on a trusted LAN.
+
 ## Project files
 
 - [app.py](app.py) handles login, permissions, forms, transactions, reports and page rendering.
