@@ -1,0 +1,100 @@
+CREATE TABLE IF NOT EXISTS units (
+ id INTEGER AUTO_INCREMENT PRIMARY KEY, block VARCHAR(255) NOT NULL, number VARCHAR(255) NOT NULL,
+ bedrooms INTEGER NOT NULL CHECK(bedrooms BETWEEN 1 AND 8), UNIQUE(block,number)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE IF NOT EXISTS users (
+ id INTEGER AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) NOT NULL, username VARCHAR(255) NOT NULL UNIQUE,
+ password_hash VARCHAR(255) NOT NULL, role VARCHAR(255) NOT NULL CHECK(role IN ('admin','resident','guard'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE IF NOT EXISTS occupancies (
+ id INTEGER AUTO_INCREMENT PRIMARY KEY, unit_id INTEGER NOT NULL,
+ user_id INTEGER NOT NULL, kind VARCHAR(255) NOT NULL CHECK(kind IN ('Owner','Tenant')),
+ start_date DATE NOT NULL, end_date DATE,
+ CHECK(end_date >= start_date),
+ FOREIGN KEY (unit_id) REFERENCES units(id),
+ FOREIGN KEY (user_id) REFERENCES users(id),
+ current_user_id INTEGER GENERATED ALWAYS AS (CASE WHEN end_date IS NULL THEN user_id END) STORED UNIQUE,
+ INDEX occupancy_unit (unit_id,end_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE IF NOT EXISTS resident_registrations (
+ user_id INTEGER PRIMARY KEY,
+ request_id VARCHAR(255) NOT NULL UNIQUE,
+ unit_id INTEGER NOT NULL,
+ kind VARCHAR(255) NOT NULL CHECK(kind IN ('Owner','Tenant')),
+ requested_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+ FOREIGN KEY (unit_id) REFERENCES units(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE IF NOT EXISTS bills (
+ id INTEGER AUTO_INCREMENT PRIMARY KEY, unit_id INTEGER NOT NULL,
+ period VARCHAR(255) NOT NULL, amount INTEGER NOT NULL CHECK(amount > 0), due_date DATE NOT NULL,
+ paid_total BIGINT NOT NULL DEFAULT 0,
+ CHECK(paid_total >= 0 AND paid_total <= amount),
+ UNIQUE(unit_id,period),
+ FOREIGN KEY (unit_id) REFERENCES units(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE IF NOT EXISTS payments (
+ id INTEGER AUTO_INCREMENT PRIMARY KEY, bill_id INTEGER NOT NULL,
+ amount INTEGER NOT NULL CHECK(amount > 0), reference VARCHAR(255) NOT NULL UNIQUE,
+ paid_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ FOREIGN KEY (bill_id) REFERENCES bills(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE OR REPLACE VIEW bill_balances AS
+ SELECT b.id,b.unit_id,b.period,b.amount,b.due_date, COALESCE(SUM(p.amount),0) AS paid, b.amount-COALESCE(SUM(p.amount),0) AS balance
+ FROM bills b LEFT JOIN payments p ON p.bill_id=b.id GROUP BY b.id,b.unit_id,b.period,b.amount,b.due_date;
+CREATE TABLE IF NOT EXISTS tickets (
+ id INTEGER AUTO_INCREMENT PRIMARY KEY, occupancy_id INTEGER NOT NULL,
+ subject VARCHAR(255) NOT NULL, description TEXT NOT NULL,
+ status VARCHAR(255) NOT NULL DEFAULT 'Open' CHECK(status IN ('Open','In progress','Resolved')),
+ created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ FOREIGN KEY (occupancy_id) REFERENCES occupancies(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE IF NOT EXISTS visits (
+ id INTEGER AUTO_INCREMENT PRIMARY KEY, unit_id INTEGER NOT NULL,
+ visitor VARCHAR(255) NOT NULL, purpose VARCHAR(255) NOT NULL, arrived_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ departed_at DATETIME,
+ FOREIGN KEY (unit_id) REFERENCES units(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE IF NOT EXISTS visit_requests (
+ id INTEGER AUTO_INCREMENT PRIMARY KEY,
+ reference VARCHAR(255) NOT NULL UNIQUE,
+ unit_id INTEGER NOT NULL,
+ visitor VARCHAR(255) NOT NULL, purpose VARCHAR(255) NOT NULL, visit_date DATE NOT NULL,
+ decision VARCHAR(255) NOT NULL DEFAULT 'Pending' CHECK(decision IN ('Pending','Approved','Declined')),
+ decided_by INTEGER,
+ visit_id INTEGER UNIQUE,
+ FOREIGN KEY (unit_id) REFERENCES units(id),
+ FOREIGN KEY (decided_by) REFERENCES occupancies(id),
+ FOREIGN KEY (visit_id) REFERENCES visits(id),
+ INDEX visit_requests_unit (unit_id,visit_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE IF NOT EXISTS complaints (
+ id INTEGER AUTO_INCREMENT PRIMARY KEY, occupancy_id INTEGER NOT NULL,
+ category VARCHAR(255) NOT NULL CHECK(category IN ('Noise','Cleanliness','Security','Shared spaces','Other')),
+ subject VARCHAR(255) NOT NULL, description TEXT NOT NULL,
+ status VARCHAR(255) NOT NULL DEFAULT 'Open' CHECK(status IN ('Open','In progress','Resolved')),
+ response TEXT, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ FOREIGN KEY (occupancy_id) REFERENCES occupancies(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE IF NOT EXISTS notices (
+ id INTEGER AUTO_INCREMENT PRIMARY KEY, title VARCHAR(255) NOT NULL, body TEXT NOT NULL,
+ created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE IF NOT EXISTS parking (
+ id INTEGER AUTO_INCREMENT PRIMARY KEY, slot VARCHAR(255) NOT NULL UNIQUE,
+ unit_id INTEGER, vehicle VARCHAR(255) UNIQUE,
+ CHECK((unit_id IS NULL) = (vehicle IS NULL)),
+ FOREIGN KEY (unit_id) REFERENCES units(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE IF NOT EXISTS facilities (
+ id INTEGER AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) NOT NULL UNIQUE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE IF NOT EXISTS bookings (
+ id INTEGER AUTO_INCREMENT PRIMARY KEY, facility_id INTEGER NOT NULL,
+ occupancy_id INTEGER NOT NULL,
+ day DATE NOT NULL, hour INTEGER NOT NULL CHECK(hour BETWEEN 8 AND 20),
+ UNIQUE(facility_id,day,hour),
+ FOREIGN KEY (facility_id) REFERENCES facilities(id),
+ FOREIGN KEY (occupancy_id) REFERENCES occupancies(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;

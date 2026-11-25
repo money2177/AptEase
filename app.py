@@ -17,6 +17,7 @@ from time import monotonic
 from urllib.parse import parse_qs, urlsplit
 
 from community import CommunityStores
+from mysql_backend import MySQLConfig, import_sqlite, prepare_schema
 
 ROOT = Path(__file__).resolve().parent
 ADMIN, RESIDENT, GUARD = "admin", "resident", "guard"
@@ -41,6 +42,8 @@ UNIT = "u.block || '-' || u.number"
 
 
 def connect(path):
+    if isinstance(path, MySQLConfig):
+        return path.connect()
     db = sqlite3.connect(path)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys=ON")
@@ -53,19 +56,30 @@ def password_hash(password, salt=None):
     return salt + ":" + digest.hex()
 
 
-def initialize(path):
-    with closing(connect(path)) as db, db:
-        db.executescript((ROOT / "schema.sql").read_text(encoding="utf-8"))
+def initialize(path, source=None):
+    with closing(connect(path)) as db:
+        if isinstance(path, MySQLConfig):
+            prepare_schema(db)
+            if source is not None:
+                import_sqlite(db, source)
+        else:
+            db.executescript((ROOT / "schema.sql").read_text(encoding="utf-8"))
+        with db:
+            seed_accounts(db, clean_legacy=not isinstance(path, MySQLConfig))
+
+
+def seed_accounts(db, clean_legacy):
+    if clean_legacy:
         demo = db.execute("""SELECT id FROM users
                            WHERE username='resident' AND name='Ananya Rao' AND role='resident'""").fetchone()
         if demo:
             remove_demo_resident(db,demo["id"])
-        if db.execute("SELECT 1 FROM users LIMIT 1").fetchone():
-            return
-        db.executemany("INSERT INTO users(name,username,password_hash,role) VALUES (?,?,?,?)", [
-            ("Community Manager", "admin", password_hash("AdminDemo123"), ADMIN),
-            ("Front Gate", "guard", password_hash("GuardDemo123"), GUARD),
-        ])
+    if db.execute("SELECT 1 FROM users LIMIT 1").fetchone():
+        return
+    db.executemany("INSERT INTO users(name,username,password_hash,role) VALUES (?,?,?,?)", [
+        ("Community Manager", "admin", password_hash("AdminDemo123"), ADMIN),
+        ("Front Gate", "guard", password_hash("GuardDemo123"), GUARD),
+    ])
 
 
 def remove_demo_resident(db, user_id):
@@ -228,7 +242,7 @@ def page_content(db, page, user, token):
     if page == "units":
         rows = db.execute(f"""SELECT {UNIT},u.bedrooms,COUNT(o.id) FROM units u
             LEFT JOIN occupancies o ON o.unit_id=u.id AND o.end_date IS NULL
-            GROUP BY u.id ORDER BY u.block,u.number""")
+            GROUP BY u.id,u.block,u.number,u.bedrooms ORDER BY u.block,u.number""")
         history = db.execute(f"""SELECT o.id,p.name,p.username,{UNIT},o.kind,o.start_date,o.end_date
            FROM occupancies o JOIN units u ON u.id=o.unit_id JOIN users p ON p.id=o.user_id
            ORDER BY o.id DESC""")
@@ -565,7 +579,7 @@ def apply_action(db, action, data, user):
         if not approved:
             raise ValueError("Only unused requests approved for today can be checked in.")
         visit = db.execute("INSERT INTO visits(unit_id,visitor,purpose) VALUES (?,?,?)",tuple(approved)).lastrowid
-        change("UPDATE visit_requests SET visit_id=? WHERE id=?",(visit,request))
+        change("UPDATE visit_requests SET visit_id=? WHERE id=? AND visit_id IS NULL",(visit,request))
     elif action == "departure":
         change("UPDATE visits SET departed_at=CURRENT_TIMESTAMP WHERE id=? AND departed_at IS NULL",(number("visit"),))
     elif action == "slot":
@@ -846,7 +860,8 @@ class Portal(BaseHTTPRequestHandler):
                     apply_directory_action(self.stores,action,data)
                 else:
                     with db:
-                        db.execute("BEGIN IMMEDIATE")
+                        if isinstance(db, sqlite3.Connection):
+                            db.execute("BEGIN IMMEDIATE")
                         apply_action(db,action,data,user)
             except (ValueError, InvalidOperation) as ex:
                 self.show_page(db,user,session[1],path,str(ex),True)
@@ -870,13 +885,23 @@ if __name__ == "__main__":
     legacy_database = ROOT / "cedar.sqlite3"
     current_database = ROOT / "aptease.sqlite3"
     default_database = legacy_database if legacy_database.exists() and not current_database.exists() else current_database
-    parser.add_argument("--db",type=Path,default=default_database)
+    parser.add_argument("--db", type=Path,
+                        help="Base filename for the community directory and vector index")
+    parser.add_argument("--mysql-database", default="aptease", help="Existing MySQL database name")
+    parser.add_argument("--import-sqlite", type=Path, help="Import existing AptEase records into an empty MySQL database")
     parser.add_argument("--host", default="127.0.0.1", help="IPv4 address to listen on")
     parser.add_argument("--port",type=int,default=8000)
     args = parser.parse_args()
-    initialize(args.db)
-    with CommunityStores(args.db) as stores, ThreadingHTTPServer(
-        (args.host,args.port),partial(Portal,database=args.db,stores=stores)
+    database = MySQLConfig(args.mysql_database)
+    try:
+        initialize(database, args.import_sqlite)
+    except ModuleNotFoundError as exc:
+        parser.exit(1, f"Missing database dependency ({exc.name}). Install requirements.txt and try again.\n")
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        parser.exit(1, f"AptEase database setup failed: {exc}\n")
+    companion_path = args.db or args.import_sqlite or default_database
+    with CommunityStores(companion_path) as stores, ThreadingHTTPServer(
+        (args.host,args.port),partial(Portal,database=database,stores=stores)
     ) as server:
         if args.host == "0.0.0.0":
             print(f"AptEase is listening on all IPv4 interfaces on port {server.server_port}. "
